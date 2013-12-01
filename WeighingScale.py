@@ -5,6 +5,7 @@ import ftplib
 import cv2
 import numpy as np
 import commands
+import httplib, urllib          #thingspeak
 from datetime import datetime
 
 #globals
@@ -19,7 +20,7 @@ def ConnectToRpi():
     ssh.connect('192.168.1.189', username='pi', password='raspberry')
     stdin, stdout, stderr = ssh.exec_command('cd mycode/scripts; ./camera.sh')
     stdout.readlines()
-    return
+    return None
     
 #%% download the picture with the FTP
 def DownloadImage():
@@ -36,7 +37,7 @@ def DownloadImage():
     
     ftp.quit()
     localfile.close()
-    return
+    return None
 
 #%% perform image analysis
 def ImageProcessing():
@@ -121,7 +122,7 @@ def ImageProcessing():
     th3 = cv2.adaptiveThreshold(gray_crop,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
                 cv2.THRESH_BINARY,141,2)
     
-    cropThresholdFileName = filenameOUT + '-cropThreshold.png'
+    cropThresholdFileName = filenameOUT + '-cropLCDThreshold.png'
     th3d = cv2.dilate(th3,None)
     cv2.imwrite(cropThresholdFileName,th3d)
     return cropThresholdFileName
@@ -132,9 +133,29 @@ def OpticalCharacterRecognition(cropThresholdFileName):
     cmd = 'ssocr -d4 -r3 ' + cropThresholdFileName
     output = commands.getoutput(cmd)
     print output
-    return output
+    #when OCS fails to return good results it writes the response in the form:
+    #output = "found only 3 of 4 digits". In this case this functions returns -1
+    #Succesful OCR returns output in the form 74.1 (4 digits for SSOCR) 
+    if output.find("found") == 0:
+        return -1
+    else:
+        return output
+
+#sending data to thingspeak
+def SendDataToThingspeak(LCDResult):
+    params = urllib.urlencode({'key': 'MB0Q9HXOHIXVL6AN','field1': LCDResult})
+    headers = {"Content-type": "application/x-www-form-urlencoded", "Accept": "text/plain"}
+    conn = httplib.HTTPConnection("api.thingspeak.com")
+    conn.request("POST", "/update", params, headers)
+    response = conn.getresponse()
+    print response.status, response.reason
+    ServerResponse = response.status, response.reason
+    conn.close()
+    return ServerResponse
 
 if __name__ == "__main__":
     ConnectToRpi()
     DownloadImage()
     LCDResult=OpticalCharacterRecognition(ImageProcessing())
+    if LCDResult != -1:
+        ThingspeakResponse = SendDataToThingspeak(LCDResult)
