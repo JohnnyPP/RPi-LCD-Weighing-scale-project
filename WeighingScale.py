@@ -6,12 +6,12 @@ import cv2
 import numpy as np
 import commands
 import httplib, urllib          #thingspeak
+import sqlite3
 from datetime import datetime
 
-#globals
 
+#globals
 filenameIN = "1.jpg"
-filenameOUT = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + filenameIN[0]
 
 #%% connect to rpi105 and take the picture
 def ConnectToRpi():
@@ -33,7 +33,7 @@ def DownloadImage():
     try:
         ftp.retrbinary('RETR ' + '1.jpg', localfile.write, 1024)
     except:
-        print "Error"
+        print "FTP Error"
     
     ftp.quit()
     localfile.close()
@@ -42,15 +42,19 @@ def DownloadImage():
 #%% perform image analysis
 def ImageProcessing():
     camera = cv2.imread(filenameIN)
-    
     height, width, depth = camera.shape
-    
+    DateAndTime = datetime.now().strftime("%Y%m%d-%H%M%S")
+    LCDRectangleThreshold = 40
+
     #turn image into gray-scale for cornerHarris algorithm that is sensitive for 
     #the LCD corners. The corners are marked with red dots
     
     gray_camera = cv2.cvtColor(camera, cv2.COLOR_BGR2GRAY)
-    ret,thresh1 = cv2.threshold(gray_camera,50,255,cv2.THRESH_BINARY)
+    #cv2.imwrite('gray_camera.png',gray_camera)
+    ret,thresh1 = cv2.threshold(gray_camera,LCDRectangleThreshold,255,cv2.THRESH_BINARY)
+    #cv2.imwrite('thresh.png',thresh1)
     gray = np.float32(thresh1)
+    #cv2.imwrite('gray.png',gray)
     dst = cv2.cornerHarris(gray,7,5,0.04)
     
     #result is dilated for marking the corners, not important
@@ -58,6 +62,7 @@ def ImageProcessing():
     
     # Threshold for an optimal value, it may vary depending on the image.
     camera[dst>0.8*dst.max()]=[0,0,255]
+    #cv2.imwrite('cropped.png',camera)
     
     #The code below searches for the 4 red dots that should appear on the edges of the LCD
     #, then it finds the x,y coordinates and sorts the arrays to get first lower points
@@ -113,7 +118,7 @@ def ImageProcessing():
     cropincreasewidht = point2xincrease - point1xincrease
     cropincreaseheight = point2yincrease - point1yincrease
     
-    cropLCDFileName = filenameOUT + '-cropLCD.png'
+    cropLCDFileName = DateAndTime + '-cropLCD.png'
     cropLCD = camera[point1yincrease:point1yincrease+cropincreaseheight,point1xincrease:point1xincrease+cropincreasewidht]
     cv2.imwrite(cropLCDFileName,cropLCD)
     
@@ -122,7 +127,7 @@ def ImageProcessing():
     th3 = cv2.adaptiveThreshold(gray_crop,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
                 cv2.THRESH_BINARY,141,2)
     
-    cropThresholdFileName = filenameOUT + '-cropLCDThreshold.png'
+    cropThresholdFileName = DateAndTime + '-cropLCDThreshold.png'
     th3d = cv2.dilate(th3,None)
     cv2.imwrite(cropThresholdFileName,th3d)
     return cropThresholdFileName
@@ -133,9 +138,9 @@ def OpticalCharacterRecognition(cropThresholdFileName):
     cmd = 'ssocr -d4 -r3 ' + cropThresholdFileName
     output = commands.getoutput(cmd)
     print output
-    #when OCS fails to return good results it writes the response in the form:
-    #output = "found only 3 of 4 digits". In this case this functions returns -1
-    #Succesful OCR returns output in the form 74.1 (4 digits for SSOCR) 
+    #when OCS fails to return good results it writes the response of the form:
+    #output = "found only 3 of 4 digits". In this case this function returns -1
+    #Succesful OCR returns output of the form 74.1 (SSOCR claims there are 4 digits) 
     if output.find("found") == 0:
         return -1
     else:
@@ -153,9 +158,42 @@ def SendDataToThingspeak(LCDResult):
     conn.close()
     return ServerResponse
 
+#add data to sqlite3 database
+def AddDataToDatabase(DateTimeNow, LCDResult, person):
+    #run this is only once 
+    conn = sqlite3.connect('data.db')
+    c = conn.cursor()
+    # Create table run this only once
+    #c.execute('''CREATE TABLE data(date text, weight real, person real)''')
+    # Insert a row of data
+    c.execute("INSERT INTO data VALUES (?, ?, ?)", (DateTimeNow, LCDResult, person))
+    # Save (commit) the changes
+    conn.commit()
+    # We can also close the connection if we are done with it.
+    # Just be sure any changes have been committed or they will be lost.
+    conn.close()
+    print "Data written to database file"
+
+#add data to txt file
+def AddDataToFile(DateTimeNow, LCDResult, person):
+    # Open/append file
+    f = open("data.txt", "a")
+    try:
+        f.write(DateTimeNow + "\t" + str(LCDResult) + "\t" + str(person) + "\n");
+    except:
+        print "File error"
+    # Close opend file
+    f.close()
+    print "Data written to text file"
+    
 if __name__ == "__main__":
+    DateTimeNow = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    person = 1
+    
     ConnectToRpi()
     DownloadImage()
     LCDResult=OpticalCharacterRecognition(ImageProcessing())
     if LCDResult != -1:
         ThingspeakResponse = SendDataToThingspeak(LCDResult)
+        AddDataToDatabase(DateTimeNow, LCDResult, person)
+        AddDataToFile(DateTimeNow, LCDResult, person)
